@@ -1,0 +1,80 @@
+# /root/src/frankenwp/examples/docker-compose.yml
+# Docker Compose file for running multiple WordPress sites using a custom FrankenPHP environment image.
+# Assumes WordPress core files and wp-config.php are mounted from the host within subdirectories under a common 'sites' directory.
+# Uses MySQL. Allows empty root password (FOR DEVELOPMENT ONLY). Database/User setup via host script (setup-db.sh).
+
+services:
+  php_env:
+    build: ../
+    image: custom-frankenphp-env:latest
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # For HTTP/3
+    volumes:
+      # Mount the parent directory containing all site subdirectories from host to container
+      # IMPORTANT: Ensure ../sites exists on the host relative to this compose file,
+      # and contains subdirectories like 'site1', 'site2', each with WP core, wp-config.php, and wp-content.
+      - ../sites:/var/www/sites
+
+      # Mount Caddy data/config volumes for persistence (SSL certs, etc.)
+      - caddy_data:/data
+      - caddy_config:/config
+
+      # Mount the Caddyfile from the host project root
+      # IMPORTANT: Assumes Caddyfile.multisite exists in the parent directory relative to this compose file
+      - ../Caddyfile.multisite:/etc/caddy/Caddyfile:ro # Mount as read-only
+
+    environment:
+      # Environment variables needed by Caddyfile placeholders (if any)
+      # e.g., CADDY_EMAIL: your-email@example.com
+      # Database credentials are now solely managed within each site's wp-config.php
+      WORDPRESS_DB_HOST: db # Still needed for wp-config.php to find the DB service
+
+    depends_on:
+      db:
+        condition: service_healthy # Wait for db to be healthy before starting php_env
+    tty: true
+
+  db:
+    image: kl3x/mysql-mecab
+    restart: always
+    ports:
+      # Expose port ONLY to the host's localhost interface for setup script
+      - "127.0.0.1:${LOCAL_DB_PORT:-3306}:3306"
+    environment:
+      # WARNING: Allowing empty root password is insecure for production environments.
+      MYSQL_ALLOW_EMPTY_PASSWORD: "yes"
+      # You can set a root password here or leave it empty if allowed above.
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-} # Defaulting to empty root password
+    volumes:
+      - dbwp:/var/lib/mysql
+    healthcheck:
+        # Adjust healthcheck command if using empty root password (remove -p flag)
+        # This assumes root password IS set via DB_ROOT_PASSWORD. If empty, remove '-p${DB_ROOT_PASSWORD:-}' part.
+        test: >
+          mysqladmin ping -h localhost -uroot
+          ${DB_ROOT_PASSWORD:+ -p"${DB_ROOT_PASSWORD}"}
+        interval: 10s
+        timeout: 5s
+        retries: 5
+
+  # Optional: phpMyAdmin for database management
+  # phpmyadmin:
+  #   image: phpmyadmin/phpmyadmin
+  #   restart: always
+  #   ports:
+  #     - ${LOCAL_PHPMYADMIN_PORT:-8086}:80
+  #   environment:
+  #     PMA_HOST: db
+  #     PMA_USER: root # Connect as root
+  #     PMA_PASSWORD: ${DB_ROOT_PASSWORD:-} # Use the root password (can be empty)
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+
+volumes:
+  dbwp:
+  caddy_data:
+  caddy_config:
